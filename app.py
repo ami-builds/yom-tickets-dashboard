@@ -15,49 +15,16 @@ import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import streamlit.components.v1 as components
-from monthly_metrics import MONTH_NAMES_ES, build_monthly_comparison, month_names_until, year_start_cutoff
+from monthly_metrics import MONTH_NAMES_ES, build_monthly_comparison, month_names_until
 
 CHILE_TZ = ZoneInfo("America/Santiago")
 SLA_PAUSED_STATUSES = {3, 6}
 AUTO_REFRESH_MS = 600000
 FRESHDESK_CACHE_TTL_SECONDS = 900
 FRESHDESK_MAX_RETRIES = 4
-DASHBOARD_VERSION = "monthly-comparison-sla-fix-v7"
-# Tickets excluidos del cálculo de % de SLA, con motivo documentado.
-# NO cuentan como cumplidos ni incumplidos: se sacan del numerador y del
-# denominador para no distorsionar la métrica por artefactos (ej. un ticket
-# reabierto por un 'gracias' del cliente que empuja la fecha de cierre).
-SLA_EXCEPTIONS = {
-    897: "Cumplido a tiempo (~9-jul 12:00); reabierto por 'gracias' del cliente que empujo el cierre al 14-jul. Incumplimiento espurio.",
-}
-
-SLA_TICKET_OVERRIDES = {
-    881: {
-        "closed_status": "Resuelto a tiempo",
-        "closed_met": True,
-        "note": "Excepción manual: ticket validado como resuelto dentro de SLA.",
-    },
-    890: {
-        "closed_status": "Resuelto a tiempo",
-        "closed_met": True,
-        "note": "Excepción manual: ticket validado como resuelto dentro de SLA.",
-    },
-    904: {
-        "closed_status": "Resuelto a tiempo",
-        "closed_met": True,
-        "note": "Excepción manual: ticket de julio validado como resuelto dentro de SLA.",
-    },
-    948: {
-        "open_status": "En pausa",
-        "closed_status": "Resuelto a tiempo",
-        "closed_met": True,
-        "note": (
-            "Pausa manual: se solicitó información al cliente el mismo día, "
-            "pero Freshdesk no dejó el ticket en Esperando al cliente. "
-            "Al cierre, se considera resuelto dentro de SLA."
-        ),
-    },
-}
+DASHBOARD_VERSION = "freshdesk-sla-flags-v8"
+STATUS_NAMES = {2: 'Abierto', 3: 'Pendiente', 4: 'Resuelto', 5: 'Cerrado', 6: 'Esperando al cliente'}
+PRIORITY_NAMES = {1: 'Baja', 2: 'Media', 3: 'Alta', 4: 'Urgente'}
 
 SLA_COMPLIANCE_HELP = (
     "**SLA Compliance — rangos de referencia:**\n\n"
@@ -164,17 +131,16 @@ def fetch_companies():
 @st.cache_data(ttl=FRESHDESK_CACHE_TTL_SECONDS)
 def fetch_all_tickets():
     """
-    Fetch current-year tickets (with stats).
-    Freshdesk only supports updated_since on this endpoint; using Jan 1 ensures
-    all tickets created this year are included because creation also updates them.
+    Fetch Freshdesk tickets created in the current year.
+    Filtering by updated_since is not safe for historical monthly comparisons:
+    old March tickets can disappear if they have not been updated recently.
     """
-    cutoff = year_start_cutoff(datetime.now(timezone.utc))
+    year_start = datetime(date.today().year, 1, 1, tzinfo=timezone.utc)
     all_tickets = []
     page = 1
-    while page <= 30:
+    while page <= 100:
         try:
             batch = api_get('/tickets', {
-                'updated_since': cutoff,
                 'per_page': 100,
                 'page': page,
                 'include': 'stats',
@@ -185,6 +151,14 @@ def fetch_all_tickets():
                 break
             all_tickets.extend(batch)
             if len(batch) < 100:
+                break
+            created_dates = [
+                pd.to_datetime(ticket.get('created_at'), utc=True, errors='coerce')
+                for ticket in batch
+                if ticket.get('created_at')
+            ]
+            created_dates = [created_at for created_at in created_dates if pd.notna(created_at)]
+            if created_dates and min(created_dates).to_pydatetime() < year_start:
                 break
             page += 1
         except FreshdeskAuthError:
@@ -279,12 +253,8 @@ def build_dataframe(tickets, companies):
     )
     df['first_responded_at'] = pd.to_datetime(df['first_responded_at'], errors='coerce', utc=True)
 
-    # Priority & Status maps
-    prio_map = {1: 'Baja', 2: 'Media', 3: 'Alta', 4: 'Urgente'}
-    status_map = {2: 'Abierto', 3: 'Pendiente', 4: 'Resuelto', 5: 'Cerrado',
-                  6: 'Esperando al cliente'}
-    df['priority_name'] = df['priority'].map(prio_map).fillna('Desconocida')
-    df['status_name'] = df['status'].map(status_map).fillna('Desconocido')
+    df['priority_name'] = df['priority'].map(PRIORITY_NAMES).fillna('Desconocida')
+    df['status_name'] = df['status'].map(STATUS_NAMES).fillna('Desconocido')
 
     # ── Client name ──
     # Primary: company_id → company name
@@ -310,18 +280,10 @@ def build_dataframe(tickets, companies):
         is_paused = row['status'] in SLA_PAUSED_STATUSES
         due = row['due_by']
         resolved = row['resolved_at']
-        override = SLA_TICKET_OVERRIDES.get(int(row['id']))
-
-        if override:
-            if is_open and 'open_status' in override:
-                return override['open_status']
-            if is_closed and 'closed_status' in override:
-                return override['closed_status']
-
-        if pd.isna(due):
-            return 'Sin SLA'
 
         if is_open:
+            if pd.isna(due):
+                return 'Sin SLA'
             if is_paused:
                 return 'En pausa'
             if now > due:
@@ -332,40 +294,36 @@ def build_dataframe(tickets, companies):
             return 'OK'
 
         if is_closed:
-            if pd.notna(resolved) and resolved > due:
+            if is_resolution_sla_breached(row):
                 return 'Resuelto tarde'
-            if pd.notna(resolved):
+            if pd.notna(resolved) or row.get('status') in [4, 5]:
                 return 'Resuelto a tiempo'
             return 'Sin datos'
 
         return 'N/A'
 
     df['sla_status'] = df.apply(calc_sla, axis=1)
-    df['sla_note'] = df['id'].apply(
-        lambda ticket_id: SLA_TICKET_OVERRIDES.get(int(ticket_id), {}).get('note', '')
-    )
-
-    # Excepciones documentadas: se marcan aparte para que NO entren al % de SLA.
-    if SLA_EXCEPTIONS:
-        _exc_ids = {str(k) for k in SLA_EXCEPTIONS}
-        df.loc[df['id'].astype(str).isin(_exc_ids), 'sla_status'] = 'Excepción SLA'
 
     # Boolean for compliance calcs
     df['sla_met'] = df['sla_status'].map({
         'Resuelto a tiempo': True,
         'Resuelto tarde': False
     })
-    for ticket_id, override in SLA_TICKET_OVERRIDES.items():
-        if 'closed_met' not in override:
-            continue
-        mask = (df['id'].astype(str) == str(ticket_id)) & (df['status'].isin([4, 5]))
-        df.loc[mask, 'sla_met'] = override['closed_met']
+    df['first_response_sla_breached'] = df.apply(is_first_response_sla_breached, axis=1)
 
     # Subject (clean)
     if 'subject' in df.columns:
         df['subject'] = df['subject'].fillna('(sin asunto)')
 
     return df
+
+
+def is_resolution_sla_breached(row):
+    return row.get('is_escalated') is True or row.get('resolution_escalated') is True
+
+
+def is_first_response_sla_breached(row):
+    return row.get('fr_escalated') is True or row.get('first_response_escalated') is True
 
 
 # ── Sidebar: filters ─────────────────────────────────────────
@@ -609,18 +567,6 @@ with tab2:
         with c5:
             st.metric("Cerrados sin datos SLA", len(closed_without_sla))
 
-        applied_overrides = df[
-            df['id'].astype(str).isin({str(ticket_id) for ticket_id in SLA_TICKET_OVERRIDES})
-        ][['id', 'subject', 'status_name', 'sla_status', 'sla_met', 'sla_note']].copy()
-        if not applied_overrides.empty:
-            st.subheader("Overrides SLA aplicados")
-            applied_overrides['sla_met'] = applied_overrides['sla_met'].map({
-                True: "Sí",
-                False: "No",
-            }).fillna("No aplica")
-            applied_overrides.columns = ['#', 'Asunto', 'Estado', 'SLA', 'Cuenta como cumplido', 'Nota']
-            st.dataframe(applied_overrides, use_container_width=True, hide_index=True)
-
         # By priority
         by_prio = sla_closed.groupby('priority_name').agg(
             total=('sla_met', 'count'),
@@ -705,13 +651,6 @@ with tab2:
             overdue.columns = ['#', 'Asunto', 'Prioridad', 'Cliente', 'Estado', 'Vencía', 'Creado']
             st.dataframe(overdue, use_container_width=True, hide_index=True)
 
-        manual_paused = open_df[
-            (open_df['sla_status'] == 'En pausa') & (open_df['sla_note'] != '')
-        ][['id', 'subject', 'priority_name', 'client_name', 'status_name', 'sla_note']].copy()
-        if not manual_paused.empty:
-            st.subheader("Pausas manuales de SLA")
-            manual_paused.columns = ['#', 'Asunto', 'Prioridad', 'Cliente', 'Estado', 'Motivo']
-            st.dataframe(manual_paused, use_container_width=True, hide_index=True)
     else:
         st.success("No hay tickets abiertos en este período.")
 
@@ -763,7 +702,7 @@ with tab4:
     st.subheader("Lista de Tickets")
 
     cols = ['id', 'subject', 'priority_name', 'status_name',
-            'client_name', 'sla_status', 'sla_note', 'created_at', 'updated_at']
+            'client_name', 'sla_status', 'created_at', 'updated_at']
     cols = [c for c in cols if c in df.columns]
 
     detail = df[cols].copy()
@@ -773,8 +712,7 @@ with tab4:
     col_rename = {
         'id': '#', 'subject': 'Asunto', 'priority_name': 'Prioridad',
         'status_name': 'Estado', 'client_name': 'Cliente',
-        'sla_status': 'SLA', 'sla_note': 'Nota SLA',
-        'created_at': 'Creado', 'updated_at': 'Actualizado'
+        'sla_status': 'SLA', 'created_at': 'Creado', 'updated_at': 'Actualizado'
     }
     detail = detail.rename(columns={k: v for k, v in col_rename.items() if k in detail.columns})
 
