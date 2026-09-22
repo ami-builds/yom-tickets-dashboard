@@ -24,7 +24,7 @@ SLA_PAUSED_STATUSES = {3, 6}
 AUTO_REFRESH_MS = 600000
 FRESHDESK_CACHE_TTL_SECONDS = 900
 FRESHDESK_MAX_RETRIES = 4
-DASHBOARD_VERSION = "freshdesk-operational-sla-v11"
+DASHBOARD_VERSION = "freshdesk-operational-sla-v12"
 STATUS_NAMES = {2: 'Abierto', 3: 'Pendiente', 4: 'Resuelto', 5: 'Cerrado', 6: 'Esperando al cliente'}
 PRIORITY_NAMES = {1: 'Baja', 2: 'Media', 3: 'Alta', 4: 'Urgente'}
 
@@ -360,13 +360,16 @@ try:
     companies = fetch_companies()
     raw = fetch_all_tickets()
     df_all = build_dataframe(raw, companies)
-    closed_year_ids = df_all[df_all['status'].isin([4, 5])]['id'].tolist()
-    if closed_year_ids:
-        with st.spinner(f"Calculando SLA operacional de {len(closed_year_ids)} ticket(s)…"):
+    df_all = apply_operational_sla(df_all, {}, CHILE_TZ)
+    possible_late_ids = df_all[
+        df_all['status'].isin([4, 5]) & (df_all['sla_status'] == 'Resuelto tarde')
+    ]['id'].tolist()
+    if possible_late_ids:
+        with st.spinner(f"Validando espera de cliente en {len(possible_late_ids)} ticket(s)…"):
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
                 year_convs_by_id = dict(zip(
-                    closed_year_ids,
-                    ex.map(fetch_ticket_conversations, closed_year_ids)
+                    possible_late_ids,
+                    ex.map(fetch_ticket_conversations, possible_late_ids)
                 ))
         df_all = apply_operational_sla(df_all, year_convs_by_id, CHILE_TZ)
 except Exception as e:
