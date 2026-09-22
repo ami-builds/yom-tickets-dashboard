@@ -18,6 +18,6 @@ def freshdesk_created_between_query(start, end):
     return (
         "created_at:>'{start}' AND created_at:<'{end}'"
     ).format(
-        start=start_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
-        end=end_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        start=start_utc.strftime('%Y-%m-%d'),
+        end=end_utc.strftime('%Y-%m-%d'),
     )

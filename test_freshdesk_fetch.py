@@ -29,8 +29,8 @@ def test_freshdesk_created_between_query_uses_utc_date_fields():
     )
 
     assert query == (
-        "created_at:>'2026-03-01T00:00:00Z' "
-        "AND created_at:<'2026-03-31T23:59:59Z'"
+        "created_at:>'2026-03-01' "
+        "AND created_at:<'2026-03-31'"
     )
 
 
