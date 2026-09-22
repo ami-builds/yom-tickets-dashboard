@@ -17,14 +17,13 @@ from zoneinfo import ZoneInfo
 import streamlit.components.v1 as components
 from freshdesk_sla import is_first_response_sla_breached, is_resolution_sla_breached
 from monthly_metrics import MONTH_NAMES_ES, build_monthly_comparison, month_names_until, year_start_cutoff
-from operational_sla import apply_operational_sla
 
 CHILE_TZ = ZoneInfo("America/Santiago")
 SLA_PAUSED_STATUSES = {3, 6}
 AUTO_REFRESH_MS = 600000
 FRESHDESK_CACHE_TTL_SECONDS = 900
 FRESHDESK_MAX_RETRIES = 4
-DASHBOARD_VERSION = "freshdesk-operational-sla-v13"
+DASHBOARD_VERSION = "freshdesk-created-month-sla-v14"
 STATUS_NAMES = {2: 'Abierto', 3: 'Pendiente', 4: 'Resuelto', 5: 'Cerrado', 6: 'Esperando al cliente'}
 PRIORITY_NAMES = {1: 'Baja', 2: 'Media', 3: 'Alta', 4: 'Urgente'}
 
@@ -360,7 +359,6 @@ try:
     companies = fetch_companies()
     raw = fetch_all_tickets()
     df_all = build_dataframe(raw, companies)
-    df_all = apply_operational_sla(df_all, {}, CHILE_TZ)
 except Exception as e:
     st.error(f"Error conectando con Freshdesk: {e}")
     st.info("Verifica los Secrets en Settings → Secrets de Streamlit Cloud.")
@@ -595,14 +593,14 @@ with tab2:
 
         # Detail: which tickets were late?
         late_tickets = sla_closed[sla_closed['sla_status'] == 'Resuelto tarde'][
-            ['id', 'subject', 'priority_name', 'client_name', 'created_at', 'resolved_at', 'due_by', 'sla_business_hours', 'sla_limit_hours']
+            ['id', 'subject', 'priority_name', 'client_name', 'created_at', 'resolved_at', 'due_by']
         ].copy()
         if not late_tickets.empty:
             st.subheader("Tickets resueltos fuera de SLA")
             late_tickets['created_at'] = late_tickets['created_at'].dt.tz_convert(CHILE_TZ).dt.strftime('%d/%m %H:%M')
             late_tickets['resolved_at'] = late_tickets['resolved_at'].dt.tz_convert(CHILE_TZ).dt.strftime('%d/%m %H:%M')
             late_tickets['due_by'] = late_tickets['due_by'].dt.tz_convert(CHILE_TZ).dt.strftime('%d/%m %H:%M')
-            late_tickets.columns = ['#', 'Asunto', 'Prioridad', 'Cliente', 'Creado', 'Resuelto', 'Vencía', 'Horas hábiles', 'SLA h']
+            late_tickets.columns = ['#', 'Asunto', 'Prioridad', 'Cliente', 'Creado', 'Resuelto', 'Vencía']
             st.dataframe(late_tickets, use_container_width=True, hide_index=True)
 
         if not closed_without_sla.empty:

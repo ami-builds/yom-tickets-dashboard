@@ -9,7 +9,7 @@ from monthly_metrics import build_monthly_comparison, month_names_until, year_st
 CHILE_TZ = ZoneInfo("America/Santiago")
 
 
-def test_sla_compliance_uses_resolution_month():
+def test_sla_compliance_uses_created_month():
     df = pd.DataFrame([
         {
             'id': 1,
@@ -43,13 +43,13 @@ def test_sla_compliance_uses_resolution_month():
     aug = table[table['Mes'] == 'Agosto'].iloc[0]
 
     assert jan['Total'] == 2
-    assert jan['Cerrados'] == 1
+    assert jan['Cerrados'] == 2
     assert jan['SLA Vencido'] == 1
-    assert jan['SLA Compliance %'] == 0
+    assert jan['SLA Compliance %'] == 50
     assert aug['Total'] == 0
-    assert aug['Cerrados'] == 1
+    assert aug['Cerrados'] == 0
     assert aug['SLA Vencido'] == 0
-    assert aug['SLA Compliance %'] == 100
+    assert pd.isna(aug['SLA Compliance %'])
 
 
 def test_month_boundaries_use_chile_timezone():
@@ -85,6 +85,6 @@ def test_year_to_date_defaults():
 
 
 if __name__ == "__main__":
-    test_sla_compliance_uses_resolution_month()
+    test_sla_compliance_uses_created_month()
     test_month_boundaries_use_chile_timezone()
     test_year_to_date_defaults()

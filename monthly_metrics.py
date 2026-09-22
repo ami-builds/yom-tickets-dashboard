@@ -46,23 +46,8 @@ def _between(series, start, end):
     return series.notna() & (series >= start) & (series < end)
 
 
-def _resolution_series(df):
-    resolved = (
-        pd.to_datetime(df['resolved_at'], errors='coerce', utc=True)
-        if 'resolved_at' in df.columns
-        else pd.Series(pd.NaT, index=df.index, dtype='datetime64[ns, UTC]')
-    )
-    closed = (
-        pd.to_datetime(df['closed_at'], errors='coerce', utc=True)
-        if 'closed_at' in df.columns
-        else pd.Series(pd.NaT, index=df.index, dtype='datetime64[ns, UTC]')
-    )
-    return resolved.combine_first(closed)
-
-
 def build_monthly_comparison(df_all, selected_months, selected_metrics, today, local_tz):
     rows = []
-    resolution_at = _resolution_series(df_all)
 
     for month_name in selected_months:
         month_num = MONTH_NAMES_ES.index(month_name) + 1
@@ -71,9 +56,7 @@ def build_monthly_comparison(df_all, selected_months, selected_metrics, today, l
         created_month = df_all[_between(df_all['created_at'], start, end)]
         open_created_month = created_month[~created_month['status'].isin([4, 5])]
 
-        closed_in_month = df_all[
-            df_all['status'].isin([4, 5]) & _between(resolution_at, start, end)
-        ]
+        closed_in_month = created_month[created_month['status'].isin([4, 5])]
         sla_closed_in_month = closed_in_month[closed_in_month['sla_met'].notna()]
 
         row = {'Mes': month_name}
