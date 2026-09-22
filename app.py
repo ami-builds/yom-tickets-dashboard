@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import streamlit.components.v1 as components
+from freshdesk_sla import is_first_response_sla_breached, is_resolution_sla_breached
 from monthly_metrics import MONTH_NAMES_ES, build_monthly_comparison, month_names_until
 
 CHILE_TZ = ZoneInfo("America/Santiago")
@@ -316,14 +317,6 @@ def build_dataframe(tickets, companies):
         df['subject'] = df['subject'].fillna('(sin asunto)')
 
     return df
-
-
-def is_resolution_sla_breached(row):
-    return row.get('is_escalated') is True or row.get('resolution_escalated') is True
-
-
-def is_first_response_sla_breached(row):
-    return row.get('fr_escalated') is True or row.get('first_response_escalated') is True
 
 
 # ── Sidebar: filters ─────────────────────────────────────────
