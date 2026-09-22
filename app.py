@@ -15,16 +15,15 @@ import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import streamlit.components.v1 as components
-from freshdesk_fetch import freshdesk_created_between_query, month_ranges_until
 from freshdesk_sla import is_first_response_sla_breached, is_resolution_sla_breached
-from monthly_metrics import MONTH_NAMES_ES, build_monthly_comparison, month_names_until
+from monthly_metrics import MONTH_NAMES_ES, build_monthly_comparison, month_names_until, year_start_cutoff
 
 CHILE_TZ = ZoneInfo("America/Santiago")
 SLA_PAUSED_STATUSES = {3, 6}
 AUTO_REFRESH_MS = 600000
 FRESHDESK_CACHE_TTL_SECONDS = 900
 FRESHDESK_MAX_RETRIES = 4
-DASHBOARD_VERSION = "freshdesk-search-history-v9"
+DASHBOARD_VERSION = "freshdesk-updated-since-v10"
 STATUS_NAMES = {2: 'Abierto', 3: 'Pendiente', 4: 'Resuelto', 5: 'Cerrado', 6: 'Esperando al cliente'}
 PRIORITY_NAMES = {1: 'Baja', 2: 'Media', 3: 'Alta', 4: 'Urgente'}
 
@@ -133,50 +132,45 @@ def fetch_companies():
 @st.cache_data(ttl=FRESHDESK_CACHE_TTL_SECONDS)
 def fetch_all_tickets():
     """
-    Fetch Freshdesk tickets created in the current year.
-    The list endpoint only returns the last 30 days unless updated_since is used,
-    but updated_since drops old tickets that were not updated recently. Search by
-    created_at month, then hydrate each ticket with stats for SLA dates.
+    Fetch current-year Freshdesk tickets with stats.
+    Freshdesk's list endpoint only returns the last 30 days unless updated_since
+    is present. A ticket creation is also an update, so Jan 1 includes tickets
+    created during the current year without the slow search-and-hydrate path.
     """
-    tickets_by_id = {}
-    for start, end in month_ranges_until(date.today()):
-        query = freshdesk_created_between_query(start, end)
-        page = 1
-        while page <= 10:
-            try:
-                data = api_get('/search/tickets', {
-                    'query': f'"{query}"',
-                    'page': page,
-                })
-                batch = data.get('results', []) if isinstance(data, dict) else []
-                if not batch:
-                    break
-                for ticket in batch:
-                    if ticket.get('id') is not None:
-                        tickets_by_id[ticket['id']] = ticket
-                if len(batch) < 30:
-                    break
-                page += 1
-            except FreshdeskAuthError:
-                raise
-            except FreshdeskRateLimitError:
-                raise
-            except Exception as e:
-                st.warning(f"Error buscando tickets {start:%Y-%m}: {e}")
-                break
-
-    hydrated = []
-    for ticket_id, fallback in tickets_by_id.items():
+    cutoff = year_start_cutoff(datetime.now(timezone.utc))
+    year_start = pd.Timestamp(datetime(date.today().year, 1, 1, tzinfo=timezone.utc))
+    tickets = []
+    page = 1
+    while page <= 100:
         try:
-            hydrated.append(api_get(f'/tickets/{ticket_id}', {'include': 'stats'}))
+            batch = api_get('/tickets', {
+                'updated_since': cutoff,
+                'per_page': 100,
+                'page': page,
+                'include': 'stats',
+                'order_by': 'created_at',
+                'order_type': 'desc',
+            })
+            if not batch:
+                break
+            for ticket in batch:
+                created_at = pd.to_datetime(ticket.get('created_at'), utc=True, errors='coerce')
+                if pd.notna(created_at) and created_at >= year_start:
+                    tickets.append(ticket)
+            if len(batch) < 100:
+                break
+            page += 1
         except FreshdeskAuthError:
             raise
         except FreshdeskRateLimitError:
             raise
-        except Exception:
-            hydrated.append(fallback)
+        except Exception as e:
+            if page == 1:
+                raise
+            st.warning(f"Error cargando tickets desde Freshdesk en página {page}: {e}")
+            break
 
-    return hydrated
+    return tickets
 
 
 @st.cache_data(ttl=600, show_spinner=False)

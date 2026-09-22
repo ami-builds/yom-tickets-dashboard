@@ -45,6 +45,29 @@ def test_null_sla_flags_are_not_breaches():
     assert is_resolution_sla_breached(row) is False
 
 
+def test_resolution_sla_breach_falls_back_to_freshdesk_due_and_resolved_dates():
+    row = pd.Series({
+        'is_escalated': False,
+        'due_by': '2026-03-05T12:00:00Z',
+        'resolved_at': '2026-03-05T12:01:00Z',
+        'stats': {'resolution_escalated': False},
+    })
+
+    assert is_resolution_sla_breached(row) is True
+
+
+def test_resolution_sla_breach_uses_closed_date_when_resolved_date_is_missing():
+    row = pd.Series({
+        'is_escalated': False,
+        'due_by': '2026-03-05T12:00:00Z',
+        'resolved_at': pd.NaT,
+        'closed_at': '2026-03-05T12:01:00Z',
+        'stats': {'resolution_escalated': False},
+    })
+
+    assert is_resolution_sla_breached(row) is True
+
+
 def test_march_compliance_drops_when_closed_ticket_has_stats_resolution_breach():
     rows = [
         {
@@ -92,4 +115,6 @@ if __name__ == "__main__":
     test_resolution_sla_breach_accepts_pandas_boolean_scalars()
     test_first_response_breach_does_not_count_as_resolution_breach()
     test_null_sla_flags_are_not_breaches()
+    test_resolution_sla_breach_falls_back_to_freshdesk_due_and_resolved_dates()
+    test_resolution_sla_breach_uses_closed_date_when_resolved_date_is_missing()
     test_march_compliance_drops_when_closed_ticket_has_stats_resolution_breach()
